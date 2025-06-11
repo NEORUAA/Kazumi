@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:canvas_danmaku/models/danmaku_content_item.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -22,6 +23,9 @@ import 'package:scrollview_observer/scrollview_observer.dart';
 import 'package:kazumi/pages/player/episode_comments_sheet.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:kazumi/bean/widget/embedded_native_control_area.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+import 'package:dio/dio.dart';
 
 class VideoPage extends StatefulWidget {
   const VideoPage({super.key});
@@ -66,6 +70,11 @@ class _VideoPageState extends State<VideoPage>
   // webview video source events listener
   // The first parameter is the video source URL and the second parameter is the video offset (start position)
   late final StreamSubscription<(String, int)> _videoURLSubscription;
+
+  // download dialog state
+  TextEditingController? _downloadController;
+  double _downloadProgress = 0.0;
+  bool _downloading = false;
 
   @override
   void initState() {
@@ -131,6 +140,7 @@ class _VideoPageState extends State<VideoPage>
         webviewItemController.onVideoURLParser.listen((event) {
       final (mediaUrl, offset) = event;
       playerController.init(mediaUrl, offset: offset);
+      _showDownloadDialog(mediaUrl);
     });
     _logSubscription = webviewItemController.onLog.listen((event) {
       debugPrint('Kazumi Webview log: $event');
@@ -343,6 +353,94 @@ class _VideoPageState extends State<VideoPage>
         );
       },
     );
+  }
+
+  Future<void> _showDownloadDialog(String url) async {
+    _downloadController ??= TextEditingController();
+    final downloadsDir = await getDownloadsDirectory();
+    var fileName = path.basename(Uri.parse(url).path);
+    if (fileName.endsWith('.m3u8')) {
+      fileName = fileName.replaceAll('.m3u8', '.ts');
+    }
+    _downloadController!.text = path.join(downloadsDir?.path ?? '', fileName);
+
+    _downloadProgress = 0.0;
+    _downloading = false;
+
+    if (!mounted) return;
+    await KazumiDialog.show(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('是否下载视频?'),
+              content: _downloading
+                  ? LinearProgressIndicator(value: _downloadProgress)
+                  : TextField(
+                      controller: _downloadController,
+                      decoration: const InputDecoration(labelText: '保存路径'),
+                    ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    setState(() {
+                      _downloading = true;
+                    });
+                    await _downloadVideo(url, _downloadController!.text,
+                        (p) => setState(() => _downloadProgress = p));
+                    if (context.mounted) Navigator.of(context).pop();
+                  },
+                  child: const Text('确定'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _downloadVideo(String url, String savePath,
+      void Function(double) onProgress) async {
+    final dio = Dio();
+    final file = File(savePath);
+    await file.parent.create(recursive: true);
+
+    if (url.toLowerCase().endsWith('.m3u8')) {
+      try {
+        final res = await dio.get<String>(url);
+        final lines = res.data!.split('\n');
+        final uri = Uri.parse(url);
+        final segments = lines
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty && !e.startsWith('#'))
+            .map((e) => uri.resolve(e).toString())
+            .toList();
+        final sink = file.openWrite();
+        for (var i = 0; i < segments.length; i++) {
+          final segRes = await dio.get<List<int>>(segments[i],
+              options: Options(responseType: ResponseType.bytes));
+          final data = segRes.data;
+          if (data != null) sink.add(data);
+          onProgress((i + 1) / segments.length);
+        }
+        await sink.close();
+      } catch (e) {
+        KazumiDialog.showToast(message: '下载失败: $e');
+      }
+    } else {
+      await dio.download(url, savePath,
+          onReceiveProgress: (rec, total) {
+        if (total != -1) {
+          onProgress(rec / total);
+        }
+      });
+    }
   }
 
   @override
