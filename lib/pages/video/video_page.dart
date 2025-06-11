@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:canvas_danmaku/models/danmaku_content_item.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
@@ -357,7 +358,10 @@ class _VideoPageState extends State<VideoPage>
   Future<void> _showDownloadDialog(String url) async {
     _downloadController ??= TextEditingController();
     final downloadsDir = await getDownloadsDirectory();
-    final fileName = path.basename(Uri.parse(url).path);
+    var fileName = path.basename(Uri.parse(url).path);
+    if (fileName.endsWith('.m3u8')) {
+      fileName = fileName.replaceAll('.m3u8', '.ts');
+    }
     _downloadController!.text = path.join(downloadsDir?.path ?? '', fileName);
 
     _downloadProgress = 0.0;
@@ -404,12 +408,39 @@ class _VideoPageState extends State<VideoPage>
   Future<void> _downloadVideo(String url, String savePath,
       void Function(double) onProgress) async {
     final dio = Dio();
-    await dio.download(url, savePath,
-        onReceiveProgress: (rec, total) {
-      if (total != -1) {
-        onProgress(rec / total);
+    final file = File(savePath);
+    await file.parent.create(recursive: true);
+
+    if (url.toLowerCase().endsWith('.m3u8')) {
+      try {
+        final res = await dio.get<String>(url);
+        final lines = res.data!.split('\n');
+        final uri = Uri.parse(url);
+        final segments = lines
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty && !e.startsWith('#'))
+            .map((e) => uri.resolve(e).toString())
+            .toList();
+        final sink = file.openWrite();
+        for (var i = 0; i < segments.length; i++) {
+          final segRes = await dio.get<List<int>>(segments[i],
+              options: Options(responseType: ResponseType.bytes));
+          final data = segRes.data;
+          if (data != null) sink.add(data);
+          onProgress((i + 1) / segments.length);
+        }
+        await sink.close();
+      } catch (e) {
+        KazumiDialog.showToast(message: '下载失败: $e');
       }
-    });
+    } else {
+      await dio.download(url, savePath,
+          onReceiveProgress: (rec, total) {
+        if (total != -1) {
+          onProgress(rec / total);
+        }
+      });
+    }
   }
 
   @override
