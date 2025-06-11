@@ -357,7 +357,12 @@ class _VideoPageState extends State<VideoPage>
 
   Future<void> _showDownloadDialog(String url) async {
     _downloadController ??= TextEditingController();
-    final downloadsDir = await getDownloadsDirectory();
+    Directory? downloadsDir;
+    if (Platform.isIOS) {
+      downloadsDir = await getApplicationDocumentsDirectory();
+    } else {
+      downloadsDir = await getDownloadsDirectory();
+    }
     var fileName = path.basename(Uri.parse(url).path);
     if (fileName.endsWith('.m3u8')) {
       fileName = fileName.replaceAll('.m3u8', '.ts');
